@@ -4,7 +4,7 @@ services:
   gis-backend:
     build:
       context: .
-      dockerfile: dockerfile
+      dockerfile: Dockerfile.prod
     container_name: pmtiles-processor
     ports:
       - "8001:8001"
