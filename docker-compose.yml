@@ -2,7 +2,9 @@ version: "3.8"
 
 services:
   gis-backend:
-    build: .
+    build:
+      context: .
+      dockerfile: dockerfile
     container_name: pmtiles-processor
     ports:
       - "8001:8001"
