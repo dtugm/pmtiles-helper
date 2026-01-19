@@ -10,7 +10,9 @@ const {
   PutObjectCommand,
   ListObjectsV2Command,
   DeleteObjectCommand,
+  GetObjectCommand,
 } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -136,6 +138,54 @@ app.post("/upload-geojson", upload.single("geoJsonFile"), (req, res) => {
     }
   });
 });
+
+app.post("/upload-mbtiles", upload.single("mbtilesFile"), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+  // Validasi ekstensi
+  if (!req.file.originalname.endsWith(".mbtiles")) {
+    cleanupFiles([req.file.path]);
+    return res.status(400).json({ error: "Only .mbtiles files allowed" });
+  }
+
+  const inputPath = req.file.path;
+  const outputFileName =
+    req.file.originalname.replace(/\.mbtiles$/i, "") + ".pmtiles";
+  const outputPath = path.join(UPLOAD_DIR, `converted-${Date.now()}.pmtiles`);
+
+  console.log(`🔄 Converting MBTiles: ${req.file.originalname}...`);
+
+  // Gunakan 'tile-join' (bagian dari Tippecanoe) untuk convert mbtiles -> pmtiles
+  // -f : force overwrite
+  // -o : output
+  const cmd = `tile-join -f -o ${outputPath} ${inputPath}`;
+
+  exec(cmd, async (error, stdout, stderr) => {
+    if (error) {
+      console.error(`Exec error: ${stderr}`); // tile-join sering kirim log ke stderr
+      cleanupFiles([inputPath, outputPath]);
+      return res
+        .status(500)
+        .json({ error: "Conversion failed", details: stderr });
+    }
+
+    try {
+      console.log("✅ Conversion done. Uploading to S3...");
+      await uploadToS3(outputPath, outputFileName);
+      cleanupFiles([inputPath, outputPath]);
+
+      res.json({
+        success: true,
+        message: "MBTiles converted to PMTiles & uploaded!",
+        s3_key: outputFileName,
+      });
+    } catch (uploadError) {
+      console.error(uploadError);
+      cleanupFiles([inputPath, outputPath]);
+      res.status(500).json({ error: "S3 Upload failed" });
+    }
+  });
+});
 // 📌 READ: List semua file PMTiles di Bucket
 app.get("/maps", async (req, res) => {
   try {
@@ -154,6 +204,50 @@ app.get("/maps", async (req, res) => {
         size: item.Size,
         lastModified: item.LastModified,
       }));
+
+    res.json({ success: true, data: maps });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/maps_v2", async (req, res) => {
+  try {
+    const command = new ListObjectsV2Command({
+      Bucket: process.env.AWS_BUCKET_NAME,
+    });
+
+    const response = await s3Client.send(command);
+    const contents = response.Contents || [];
+
+    // Filter hanya .pmtiles
+    const pmtilesFiles = contents.filter((item) =>
+      item.Key.endsWith(".pmtiles"),
+    );
+
+    // Generate Presigned URL untuk setiap file (Async map)
+    const maps = await Promise.all(
+      pmtilesFiles.map(async (item) => {
+        // Buat command GetObject untuk file ini
+        const getCommand = new GetObjectCommand({
+          Bucket: process.env.AWS_BUCKET_NAME,
+          Key: item.Key,
+        });
+
+        // Generate URL yang valid selama 1 jam (3600 detik)
+        const signedUrl = await getSignedUrl(s3Client, getCommand, {
+          expiresIn: 3600,
+        });
+
+        return {
+          filename: item.Key,
+          url: signedUrl, // URL ini aman dan ada expirednya
+          size: item.Size,
+          lastModified: item.LastModified,
+        };
+      }),
+    );
 
     res.json({ success: true, data: maps });
   } catch (error) {
