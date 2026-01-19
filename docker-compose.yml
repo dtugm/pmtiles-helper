@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  gis-backend:
+    build: .
+    container_name: pmtiles-processor
+    ports:
+      - "8001:8001"
+    volumes:
+      # (Opsional) Mapping folder uploads ke luar agar bisa dipantau
+      - ./uploads:/app/uploads
+      # (Opsional) Hot-reload saat development (kalau pakai nodemon)
+      - ./src:/app/src
+      # - ./server.js:/app/server.js
+      - ./.env:/app/.env
+    env_file:
+      - .env
+
+    command: npx nodemon -L src/server.js
+
+    restart: unless-stopped
